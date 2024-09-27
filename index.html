@@ -476,6 +476,7 @@ const MOON_NUDGE_X = navigator.platform != "MacIntel" ? -0.085 : 0;
 const MOON_NUDGE_Y = navigator.platform != "MacIntel" ? -0.005 : 0;
 let atlas = gl.createTexture();
 {
+    const DEBUG_SPRITESHEET = 1;
     const canvas = document.createElement("canvas");
 
     canvas.width = canvas.height = ATLAS_SIZE * EMOJI_SIZE;
@@ -487,21 +488,65 @@ let atlas = gl.createTexture();
 
     {
         const PAD = EMOJI_SIZE*0.1;
-        ctx.font = (EMOJI_SIZE - PAD*2) + 'px sans-serif';
-
-        let i = 0;
-        for (const char of ATLAS_CHARS) {
-            const x = (           i % ATLAS_SIZE ) * EMOJI_SIZE;
-            const y = (Math.floor(i / ATLAS_SIZE)) * EMOJI_SIZE;
-
-            ctx.fillText(
-                char,
-                x + PAD + X_FUDGE,
-                y + EMOJI_SIZE - PAD*2
-            );
-
-            i++;
+        if (DEBUG_SPRITESHEET) 
+            ctx.font = (0.5 * EMOJI_SIZE - PAD*2) + 'px sans-serif';
+        else {
+            ctx.font = (EMOJI_SIZE - PAD*2) + 'px sans-serif';
         }
+
+        /* draw from browser's font */
+        {
+            let i = 0;
+            for (const char of ATLAS_CHARS) {
+                const x = (           i % ATLAS_SIZE ) * EMOJI_SIZE;
+                const y = (Math.floor(i / ATLAS_SIZE)) * EMOJI_SIZE;
+
+                ctx.fillText(
+                    char,
+                    x + PAD + X_FUDGE,
+                    y + EMOJI_SIZE - PAD*2
+                );
+
+                i++;
+            }
+        }
+
+        /* draw from twemoji */
+        {
+            let i = 0;
+            for (const char of ATLAS_CHARS) {
+                const img = new Image();
+
+                (async () => {
+                    const x = (           i % ATLAS_SIZE ) * EMOJI_SIZE;
+                    const y = (Math.floor(i / ATLAS_SIZE)) * EMOJI_SIZE;
+
+                    await new Promise(res => img.onload = res);
+                    const size = DEBUG_SPRITESHEET ? EMOJI_SIZE * 0.5 : EMOJI_SIZE;
+                    ctx.drawImage(
+                        img,
+                        x + PAD*0.5,
+                        y + PAD*2,
+                        size - PAD*2,
+                        size - PAD*2
+                    );
+                })();
+
+                img.src = window.location +
+                               'twemoji/' +
+                               char.codePointAt(0).toString(16) +
+                               '.svg';
+                i++;
+            }
+        }
+    }
+
+    /* preview spritesheet */
+    if (1) {
+        canvas.style.width  = "100vh";
+        canvas.style.height = "100vh";
+        document.querySelector("canvas").remove();
+        document.body.appendChild(canvas);
     }
 
     gl.bindTexture(gl.TEXTURE_2D, atlas);
