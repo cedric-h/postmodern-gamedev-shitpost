@@ -472,65 +472,79 @@ let shaders;
 }
 
 /* creating spritesheet, uploading to GPU */
+const EMOJIFONT_MAC     = 0;
+const EMOJIFONT_TWEMOJI = 1;
+const EMOJIFONT_OTHER   = 2;
+let emojifont = EMOJIFONT_TWEMOJI;
+
 const MOON_NUDGE_X = navigator.platform != "MacIntel" ? -0.085 : 0;
-const MOON_NUDGE_Y = navigator.platform != "MacIntel" ? -0.005 : 0;
+let MOON_NUDGE_Y = 0;
+if (emojifont != EMOJIFONT_MAC    ) MOON_NUDGE_Y = -0.005;
+if (emojifont == EMOJIFONT_TWEMOJI) MOON_NUDGE_Y =  0.085;
+
 let atlas = gl.createTexture();
 {
-    const DEBUG_SPRITESHEET = 1;
+    const USE_TWEMOJI         = 1;
+    const PREVIEW_SPRITESHEET = 0;
     const canvas = document.createElement("canvas");
 
     canvas.width = canvas.height = ATLAS_SIZE * EMOJI_SIZE;
 
     const ctx = canvas.getContext("2d");
 
+    const PAD = EMOJI_SIZE*0.1;
     let X_FUDGE = -0.1*EMOJI_SIZE;
-    if (navigator.platform.indexOf("Mac") === 0 || navigator.platform === "iPhone") X_FUDGE = 0;
+    if (emojifont == EMOJIFONT_MAC) X_FUDGE = 0;
+
+    /* draw from browser's font */
+    {
+        ctx.font = (EMOJI_SIZE - PAD*2) + 'px sans-serif';
+
+        let i = 0;
+        for (const char of ATLAS_CHARS) {
+            const x = (           i % ATLAS_SIZE ) * EMOJI_SIZE;
+            const y = (Math.floor(i / ATLAS_SIZE)) * EMOJI_SIZE;
+
+            ctx.fillText(
+                char,
+                x + PAD + X_FUDGE,
+                y + EMOJI_SIZE - PAD*2
+            );
+
+            i++;
+        }
+    }
 
     {
-        const PAD = EMOJI_SIZE*0.1;
-        if (DEBUG_SPRITESHEET) 
-            ctx.font = (0.5 * EMOJI_SIZE - PAD*2) + 'px sans-serif';
-        else {
-            ctx.font = (EMOJI_SIZE - PAD*2) + 'px sans-serif';
-        }
-
-        /* draw from browser's font */
-        {
-            let i = 0;
-            for (const char of ATLAS_CHARS) {
-                const x = (           i % ATLAS_SIZE ) * EMOJI_SIZE;
-                const y = (Math.floor(i / ATLAS_SIZE)) * EMOJI_SIZE;
-
-                ctx.fillText(
-                    char,
-                    x + PAD + X_FUDGE,
-                    y + EMOJI_SIZE - PAD*2
-                );
-
-                i++;
-            }
-        }
-
         /* draw from twemoji */
-        {
+        if (emojifont == EMOJIFONT_TWEMOJI) {
             let i = 0;
+
+            const loading_promises = [];
+
+            /* would be so cool to have these slide down
+             * to replace the built-in font ones, ala a slot machine */
+
             for (const char of ATLAS_CHARS) {
                 const img = new Image();
 
-                (async () => {
+                loading_promises.push((async () => {
                     const x = (           i % ATLAS_SIZE ) * EMOJI_SIZE;
                     const y = (Math.floor(i / ATLAS_SIZE)) * EMOJI_SIZE;
 
                     await new Promise(res => img.onload = res);
-                    const size = DEBUG_SPRITESHEET ? EMOJI_SIZE * 0.5 : EMOJI_SIZE;
+                    const size = EMOJI_SIZE;
+
+                    ctx.clearRect(x, y, size, size);
+
                     ctx.drawImage(
                         img,
-                        x + PAD*0.5,
-                        y + PAD*2,
+                        x + PAD - X_FUDGE*0.5,
+                        y + PAD - X_FUDGE*0.75,
                         size - PAD*2,
                         size - PAD*2
                     );
-                })();
+                })());
 
                 img.src = window.location +
                                'twemoji/' +
@@ -538,40 +552,46 @@ let atlas = gl.createTexture();
                                '.svg';
                 i++;
             }
+
+            Promise.all(loading_promises).then(upload)
         }
     }
 
     /* preview spritesheet */
-    if (1) {
+    if (PREVIEW_SPRITESHEET) {
         canvas.style.width  = "100vh";
         canvas.style.height = "100vh";
         document.querySelector("canvas").remove();
         document.body.appendChild(canvas);
     }
 
-    gl.bindTexture(gl.TEXTURE_2D, atlas);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-    gl.texImage2D(
-        /* target         */ gl.TEXTURE_2D,
-        /* level          */ 0,
-        /* internalformat */ gl.RGBA,
-        /* width          */ canvas.width,
-        /* height         */ canvas.height,
-        /* border,        */ 0,
-        /* format,        */ gl.RGBA,
-        /* type,          */ gl.UNSIGNED_BYTE,
-        /* data           */ canvas
-    );
-    gl.generateMipmap(gl.TEXTURE_2D);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    function upload() {
+        gl.bindTexture(gl.TEXTURE_2D, atlas);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+        gl.texImage2D(
+            /* target         */ gl.TEXTURE_2D,
+            /* level          */ 0,
+            /* internalformat */ gl.RGBA,
+            /* width          */ canvas.width,
+            /* height         */ canvas.height,
+            /* border,        */ 0,
+            /* format,        */ gl.RGBA,
+            /* type,          */ gl.UNSIGNED_BYTE,
+            /* data           */ canvas
+        );
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    if (gl_anisotropy) {
-        const max = gl.getParameter(gl_anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
-        gl.texParameterf(gl.TEXTURE_2D, gl_anisotropy.TEXTURE_MAX_ANISOTROPY_EXT, max);
+        if (gl_anisotropy) {
+            const max = gl.getParameter(gl_anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
+            gl.texParameterf(gl.TEXTURE_2D, gl_anisotropy.TEXTURE_MAX_ANISOTROPY_EXT, max);
+        }
     }
+
+    upload();
 }
 
 /* uploading skydome texture to GPU
@@ -731,7 +751,7 @@ const map_util = {
                     drawImg(
                         /* axis */ AXIS_SPRITE,
                         /* x, y */ lerp(path_min-1.5, path_max+0.5, x), 1.8*y + bridge.y,
-                        /* size */ 1,
+                        /* size */ (emojifont == EMOJIFONT_TWEMOJI) ? 0.7 : 1.0,
                         /* img  */ ATLAS_THREAD
                     );
 
