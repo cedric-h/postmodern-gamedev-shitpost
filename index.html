@@ -1328,9 +1328,17 @@ const HOLE_TUTORIAL_TO_DRAWBRIDGE   = 1;
 const HOLE_UPPER_DRAWBRIDGE_TO_CAVE = 2;
 const HOLE_CAVE_TO_LOWER_DRAWBRIDGE = 3;
 
+/* right now the save/load is kind of cursed
+ *
+ * I wanted to have code and relevant constants kept next to the declarations for them,
+ * so when serializing, we just filter out functions and fields with capitalized letters,
+ * then we stick that back in when deserializing. */
 let save = save_load();
 function save_save() {
-    localStorage.setItem("save_game", JSON.stringify(save));
+    /* filter out uppercase things; those are constants that should get replaced. */
+    const replacer = (key, val) => (key.toLowerCase() != key) ? undefined : val;
+
+    localStorage.setItem("save_game", JSON.stringify(save, replacer));
 }
 function save_load() {
     const save_string = localStorage.getItem("save_game");
@@ -1342,6 +1350,8 @@ function save_load() {
     /* patch in methods */
     if (pojo.version == rich.version)
         return (function patch(out, pojo, rich) {
+            /* the goal here is to just to put in functions on the core objects
+             * (completely ignore arrays) and to fill in missing (capitalized) fields */
             for (const key in rich) {
                 /* could use "pojo" as "out," but then
                  * it's impossible to "lose" a field. */
@@ -2013,7 +2023,7 @@ function save_new() {
 
             [MAP_DRAWBRIDGE]: {
                 PLAYER_SPAWN: {
-                    [HOLE_TUTORIAL_TO_DRAWBRIDGE]:   { pos: { x: -17.2, y: -15.0 }, map: MAP_TUTORIAL },
+                    [HOLE_TUTORIAL_TO_DRAWBRIDGE]:   { pos: { x: -44.6, y: -14.8 }, map: MAP_TUTORIAL },
                     [HOLE_UPPER_DRAWBRIDGE_TO_CAVE]: { pos: { x: -15.6, y:  -1.6 }, map: MAP_CAVE     },
                     [HOLE_CAVE_TO_LOWER_DRAWBRIDGE]: { pos: { x:  -2.0, y:  -3.0 }, map: MAP_CAVE     },
                 },
@@ -2026,9 +2036,6 @@ function save_new() {
                 CRANK_Y: 3,
                 CRANK_ANGLE_OFFSET: 0.525*Math.PI,
 
-                LOOKOUT_X: -15.6,
-                LOOKOUT_Y: - 5.6,
-
                 for_circles(circle) {
                     circle(   0.6,   5.4,  4.5);
                     circle(   0.0,   0.0,  8.0);
@@ -2036,28 +2043,15 @@ function save_new() {
 
                     circle( -15.6, -14.8,  5.7);
                     circle( -16.6, - 9.6,  4.2);
-                    circle( this.LOOKOUT_X, this.LOOKOUT_Y+1, 5.2);
+                    circle( -15.6, - 4.6,   5.2);
+                    circle( -19.6, -14.8,  4.2 );
+                    circle( -21.6, -14.8,   5.2); /* first bridge ends */
+                    circle( -44.6, -14.8,   5.2);
 
                     circle(  14.8, -14.8,  5.5);
                 },
 
                 camera_animate() {
-                    if (this.crank_progress < 0.99) {
-                        const player = save.player;
-                        let dist = Math.abs(player.pos.y - (this.LOOKOUT_Y - 3));
-                        dist = unit_clamp(1 - Math.min(1, dist / 4));
-                        input.zoom = lerp(DEFAULT_ZOOM, DEFAULT_ZOOM*1.5, dist);
-
-                        player.damped_cam_factor = DEFAULT_DAMPED_CAM_FACTOR;
-                        if (dist > 0) {
-                            player.damp_camera(
-                                this.LOOKOUT_X + dist*10.0,
-                                this.LOOKOUT_Y + dist*0.8
-                            );
-                            player.damped_cam_factor = 1;
-                        }
-                    }
-
                     map_util.hole.leaving_cutscene(this.hole_transition, this.for_holes.bind(this));
                 },
 
