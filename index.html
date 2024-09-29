@@ -741,7 +741,7 @@ const map_util = {
         /* distance from point to bridge */
         distance(bridge, p) {
             let planks_min = Math.min(bridge.path_from, bridge.path_to)-3;
-            let planks_max = Math.max(bridge.path_from, bridge.path_to)+3;
+            let planks_max = Math.max(bridge.path_from, bridge.path_to)+(bridge.finished ? -1.5 : 3);
             return sd_segment(
                 p,
                 planks_min, bridge.y,
@@ -814,6 +814,122 @@ const map_util = {
                 }
             }
         }
+    },
+
+    crank: {
+        ANGLE_OFFSET: 0.525*Math.PI,
+
+        init() {
+            return []
+        },
+
+        ensure_allocated(cranks, idx, spawn_x, spawn_y) {
+            
+            cranks[idx] ??= {
+                crank_progress: 0,
+                crank_angle_vel: 0,
+                crank_angle: 0,
+            };
+
+            return cranks[idx];
+        },
+
+        draw(cranks, for_cranks, ctx) {
+            for_cranks((idx, crank_x, crank_y) => {
+                const crank = this.ensure_allocated(cranks, idx, crank_x, crank_y);
+
+                const CRANK_HEIGHT = 0.8;
+                ctx.drawImg(
+                    AXIS_SPRITE,
+                    crank_x, crank_y,
+                    CRANK_HEIGHT,
+                    ATLAS_THREAD,
+                    SHADER_FLAG_BROWNIFY
+                );
+
+                ctx.pushImgUV(ATLAS_CANE, SHADER_FLAG_BROWNIFY);
+                const rot = crank.crank_angle - Math.PI*0.57;
+                const end_x = 2.25*Math.cos(rot - this.ANGLE_OFFSET);
+                const end_y = 2.25*Math.sin(rot - this.ANGLE_OFFSET);
+                const stick_x = crank_x + -0.10 + end_x;
+                const stick_y = crank_y + -0.27 + end_y;
+                const stick_z = CRANK_HEIGHT + 0.2;
+                ctx.pushFlatXYZ(stick_x, stick_y, stick_z, 3, rot);
+                const geo = ctx.geo;
+                geo.layer[geo.layer.length - 1] = stick_y + stick_z + 2;
+                geo.layer[geo.layer.length - 2] = stick_y + stick_z + 2;
+            });
+        },
+
+        distance(cranks, for_cranks, pos) {
+            let max_dist = -Infinity;
+            for_cranks((idx, crank_x, crank_y) => {
+                const crank = this.ensure_allocated(cranks, idx, crank_x, crank_y);
+
+                /* hub */
+                {
+                    const dx = pos.x - crank_x;
+                    const dy = pos.y - crank_y;
+                    const size = 1.2;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    max_dist = Math.max(max_dist, size - dist);
+                }
+
+                /* shaft */
+                {
+                    const angle = crank.crank_angle - 3*(this.ANGLE_OFFSET - Math.PI*0.5);
+                    const b_x = crank_x - Math.cos(angle) * 4.5;
+                    const b_y = crank_y - Math.sin(angle) * 4.5;
+
+                    const size = 0.6;
+                    const dist = sd_segment(pos, crank_x, crank_y, b_x, b_y);
+                    max_dist = Math.max(max_dist, size - dist);
+                }
+            });
+
+            return max_dist;
+        },
+
+        update(cranks, for_cranks) {
+            for_cranks((idx, crank_x, crank_y) => {
+                const crank = this.ensure_allocated(cranks, idx, crank_x, crank_y);
+
+                let dx = crank_x - save.player.pos.x;
+                let dy = crank_y - save.player.pos.y;
+                const dlen = Math.sqrt(dx*dx + dy*dy);
+                if (dlen > 2) {
+                    dx /= dlen;
+                    dy /= dlen;
+
+                    const px = Math.cos(crank.crank_angle);
+                    const py = Math.sin(crank.crank_angle);
+                    const ccw = ((-dy)*px + dx*py) < 0;
+                    const close = (dx*px + dy*py) > 0.85;
+
+                    if (!ccw && close) {
+                        const goal_angle = Math.atan2(dy, dx);
+                        const t = Math.pow(1 - 0.4, Math.round(target_fps)*delta_time);
+                        crank.crank_angle_vel += 0.7*(crank.crank_angle - lerp_rads(crank.crank_angle, goal_angle, t));
+                    }
+                }
+
+                /* frame-independent multiplicative drag */
+                {
+                    const fraction_remaining_after_one_second = 0.002;
+                    const new_vel_angle = crank.crank_angle_vel * Math.pow(fraction_remaining_after_one_second, delta_time);
+
+                    let delta = (new_vel_angle - crank.crank_angle_vel) / Math.log(fraction_remaining_after_one_second);
+
+                    delta *= 0.1;
+                    const new_crank_progress = Math.min(1, crank.crank_progress + delta);
+                    const progress_capped_delta = (new_crank_progress - crank.crank_progress);
+                    crank.crank_angle += progress_capped_delta*10;
+                    crank.crank_progress += progress_capped_delta;
+
+                    crank.crank_angle_vel = new_vel_angle;
+                }
+            });
+        },
     },
 
     enemies: {
@@ -1172,9 +1288,6 @@ const map_util = {
     },
 
     hole: {
-        /* used to prevent infinite loops; you come out of the hole with some velocity,
-         * so it should be impossible to get sucked right back in. */
-        last_transition_timestamp: null,
         TRANSITION_DEBOUNCE_SECS: 1,
 
         /* transitions to the next map at the end; don't call this fn to block that if needed.
@@ -1221,7 +1334,7 @@ const map_util = {
 
                 /* the animation is done, time has run over */
                 if (t > 0) {
-                    this.last_transition_timestamp = save.time;
+                    save.last_transition_timestamp = save.time;
 
                     /* transition to next map */
 
@@ -1284,8 +1397,8 @@ const map_util = {
         },
 
         detect_step(hole_transition, for_holes) {
-            if (this.last_transition_timestamp != null) {
-                const elapsed = save.time - this.last_transition_timestamp;
+            if (save.last_transition_timestamp != null) {
+                const elapsed = save.time - save.last_transition_timestamp;
                 if (elapsed < this.TRANSITION_DEBOUNCE_SECS) return;
             }
             for_holes((idx, hole_x, hole_y, _map) => {
@@ -1328,62 +1441,15 @@ const HOLE_TUTORIAL_TO_DRAWBRIDGE   = 1;
 const HOLE_UPPER_DRAWBRIDGE_TO_CAVE = 2;
 const HOLE_CAVE_TO_LOWER_DRAWBRIDGE = 3;
 
-/* right now the save/load is kind of cursed
- *
- * I wanted to have code and relevant constants kept next to the declarations for them,
- * so when serializing, we just filter out functions and fields with capitalized letters,
- * then we stick that back in when deserializing. */
-let save = save_load();
-function save_save() {
-    /* filter out uppercase things; those are constants that should get replaced. */
-    const replacer = (key, val) => (key.toLowerCase() != key) ? undefined : val;
-
-    localStorage.setItem("save_game", JSON.stringify(save, replacer));
-}
-function save_load() {
-    const save_string = localStorage.getItem("save_game");
-    if (!DEBUG_PERSIST || !save_string) return save_new();
-
-    const pojo = JSON.parse(save_string);
-    const rich = save_new();
-
-    /* patch in methods */
-    if (pojo.version == rich.version)
-        return (function patch(out, pojo, rich) {
-            /* the goal here is to just to put in functions on the core objects
-             * (completely ignore arrays) and to fill in missing (capitalized) fields */
-            for (const key in rich) {
-                /* could use "pojo" as "out," but then
-                 * it's impossible to "lose" a field. */
-                out[key] = pojo[key];
-
-                if (typeof rich[key] == "function") {
-                    out[key] = rich[key];
-                }
-
-                if (!(key in pojo)) {
-                    out[key] = rich[key];
-                }
-
-                const isArray = Array.isArray(pojo[key]);
-                const isNull = pojo[key] == null;
-                const isFn = typeof pojo[key] == "function";
-                const isObject = (typeof pojo[key]) == "object";
-                if (!isFn && !isNull && !isArray && isObject) {
-                    out[key] = patch({}, pojo[key], rich[key]);
-                }
-            }
-
-            return out;
-        })({}, pojo, rich);
-
-    /* version mismatch? just make a new character */
-    return rich;
-}
-const save_new = () => {
+const save_new = () => ({
     version: 0,
     time: 0, /* in-universe game time */
 
+    /* used to prevent infinite loops; you come out of the hole with some velocity,
+     * so it should be impossible to get sucked right back in. */
+    last_transition_timestamp: null,
+    /* used to prevent movement, and camera controller taking over
+     * while a cutscene is active */
     cutscene_active: false,
 
     player: {
@@ -2022,18 +2088,19 @@ const save_new = () => {
 
         [MAP_DRAWBRIDGE]: {
             PLAYER_SPAWN: {
-                [HOLE_TUTORIAL_TO_DRAWBRIDGE]:   { pos: { x: -44.6, y: -14.8 }, map: MAP_TUTORIAL },
+                [HOLE_TUTORIAL_TO_DRAWBRIDGE  ]: { pos: { x: -45.6, y: -18.8 }, map: MAP_TUTORIAL },
                 [HOLE_UPPER_DRAWBRIDGE_TO_CAVE]: { pos: { x: -15.6, y:  -1.6 }, map: MAP_CAVE     },
                 [HOLE_CAVE_TO_LOWER_DRAWBRIDGE]: { pos: { x:  -2.0, y:  -3.0 }, map: MAP_CAVE     },
             },
             BULLETS_HIT_WALLS: true,
 
-            crank_progress: 0,
-            crank_angle_vel: 0,
-            crank_angle: 0,
-            CRANK_X: 3,
-            CRANK_Y: 3,
-            CRANK_ANGLE_OFFSET: 0.525*Math.PI,
+            cranks: map_util.crank.init(),
+            CRANK_ID_START     : 0,
+            CRANK_ID_AFTER_CAVE: 1,
+            for_cranks(crank) {
+                crank(this.CRANK_ID_START     , -45.6, - 8.8);
+                crank(this.CRANK_ID_AFTER_CAVE,   3.0,   3.0);
+            },
 
             for_circles(circle) {
                 circle(   0.6,   5.4,  4.5);
@@ -2042,10 +2109,12 @@ const save_new = () => {
 
                 circle( -15.6, -14.8,  5.7);
                 circle( -16.6, - 9.6,  4.2);
-                circle( -15.6, - 4.6,   5.2);
-                circle( -19.6, -14.8,  4.2 );
-                circle( -21.6, -14.8,   5.2); /* first bridge ends */
-                circle( -44.6, -14.8,   5.2);
+                circle( -15.6, - 4.6,  5.2);
+                circle( -19.6, -14.8,  4.2);
+                circle( -21.6, -14.8,  5.2); /* first bridge ends */
+                circle( -45.6, -18.8,  4.2);
+                circle( -44.6, -14.8,  5.2);
+                circle( -45.6, - 8.8,  6.2);
 
                 circle(  14.8, -14.8,  5.5);
             },
@@ -2055,7 +2124,23 @@ const save_new = () => {
             },
 
             for_bridges(bridge) {
-                bridge({ y: -15, path_from: -10, path_to: lerp(-10, 11, unit_clamp(this.crank_progress)) });
+                const prog_for_crank = id => {
+                    const crank = this.cranks[id];
+                    return unit_clamp(crank?.crank_progress ?? 0);
+                };
+
+                bridge({
+                    y: -15,
+                    path_from: -39,
+                    path_to: lerp(-39, -25, prog_for_crank(this.CRANK_ID_START)),
+                    finished: prog_for_crank(this.CRANK_ID_START) < 0.99
+                });
+                bridge({
+                    y: -15,
+                    path_from: -10,
+                    path_to: lerp(-10, 11, prog_for_crank(this.CRANK_ID_AFTER_CAVE)),
+                    finished: prog_for_crank(this.CRANK_ID_AFTER_CAVE) < 0.99
+                });
             },
 
             hole_transition: { step_timestamp: null, stepped_idx: null },
@@ -2071,42 +2156,7 @@ const save_new = () => {
                 if (save.cutscene_active) return;
 
                 /* crankin' */
-                {
-                    let dx = this.CRANK_X - save.player.pos.x;
-                    let dy = this.CRANK_Y - save.player.pos.y;
-                    const dlen = Math.sqrt(dx*dx + dy*dy);
-                    if (dlen > 2) {
-                        dx /= dlen;
-                        dy /= dlen;
-
-                        const px = Math.cos(this.crank_angle);
-                        const py = Math.sin(this.crank_angle);
-                        const ccw = ((-dy)*px + dx*py) < 0;
-                        const close = (dx*px + dy*py) > 0.85;
-
-                        if (!ccw && close) {
-                            const goal_angle = Math.atan2(dy, dx);
-                            const t = Math.pow(1 - 0.4, Math.round(target_fps)*delta_time);
-                            this.crank_angle_vel += 0.7*(this.crank_angle - lerp_rads(this.crank_angle, goal_angle, t));
-                        }
-                    }
-
-                    /* frame-independent multiplicative drag */
-                    {
-                        const fraction_remaining_after_one_second = 0.002;
-                        const new_vel_angle = this.crank_angle_vel * Math.pow(fraction_remaining_after_one_second, delta_time);
-
-                        let delta = (new_vel_angle - this.crank_angle_vel) / Math.log(fraction_remaining_after_one_second);
-
-                        delta *= 0.1;
-                        const new_crank_progress = Math.min(1, this.crank_progress + delta);
-                        const progress_capped_delta = (new_crank_progress - this.crank_progress);
-                        this.crank_angle += progress_capped_delta*10;
-                        this.crank_progress += progress_capped_delta;
-
-                        this.crank_angle_vel = new_vel_angle;
-                    }
-                }
+                map_util.crank.update(this.cranks, this.for_cranks.bind(this));
 
                 map_util.hole.detect_step(this.hole_transition, this.for_holes.bind(this));
             },
@@ -2126,28 +2176,7 @@ const save_new = () => {
 
                 this.for_bridges((bridge) => map_util.bridge.draw(bridge, ctx));
 
-                const { CRANK_X, CRANK_Y } = this;
-                const CRANK_HEIGHT = 0.8;
-                drawImg(AXIS_SPRITE, CRANK_X, CRANK_Y, CRANK_HEIGHT, ATLAS_THREAD, SHADER_FLAG_BROWNIFY);
-
-                pushImgUV(ATLAS_CANE, SHADER_FLAG_BROWNIFY);
-                const rot = this.crank_angle - Math.PI*0.57;
-                const end_x = 2.25*Math.cos(rot - this.CRANK_ANGLE_OFFSET);
-                const end_y = 2.25*Math.sin(rot - this.CRANK_ANGLE_OFFSET);
-                const stick_x = CRANK_X + -0.10 + end_x;
-                const stick_y = CRANK_Y + -0.27 + end_y;
-                const stick_z = CRANK_HEIGHT + 0.2;
-                pushFlatXYZ(stick_x, stick_y, stick_z, 3, rot);
-                geo.layer[geo.layer.length - 1] = stick_y + stick_z + 2;
-                geo.layer[geo.layer.length - 2] = stick_y + stick_z + 2;
-
-                // pushImgUV(ATLAS_THREAD);
-                // pushSpriteXYZ(
-                //     stick_x + 0.8*end_x,//+0.3,
-                //     stick_y + 0.8*end_y,//+0.3,
-                //     stick_z,
-                //     0.8
-                // );
+                map_util.crank.draw(this.cranks, this.for_cranks.bind(this), ctx);
 
                 map_util.hole.draw(this.hole_transition, this.for_holes.bind(this), ctx);
             },
@@ -2167,28 +2196,11 @@ const save_new = () => {
                     min_dist = Math.min(min_dist, dist);
                 });
 
-                let max_dist = -Infinity;
-                {
-                    /* hub */
-                    {
-                        const dx = pos.x - this.CRANK_X;
-                        const dy = pos.y - this.CRANK_Y;
-                        const size = 1.2;
-                        const dist = Math.sqrt(dx*dx + dy*dy);
-                        max_dist = Math.max(max_dist, size - dist);
-                    }
-
-                    /* shaft */
-                    {
-                        const angle = this.crank_angle - 3*(this.CRANK_ANGLE_OFFSET - Math.PI*0.5);
-                        const b_x = this.CRANK_X - Math.cos(angle) * 4.5;
-                        const b_y = this.CRANK_Y - Math.sin(angle) * 4.5;
-
-                        const size = 0.6;
-                        const dist = sd_segment(pos, this.CRANK_X, this.CRANK_Y, b_x, b_y);
-                        max_dist = Math.max(max_dist, size - dist);
-                    }
-                }
+                const max_dist = map_util.crank.distance(
+                    this.cranks, 
+                    this.for_cranks.bind(this),
+                    pos
+                );
 
                 return Math.max(min_dist, max_dist);
             },
@@ -2565,7 +2577,59 @@ const save_new = () => {
             },
         },
     }
-};
+});
+/* right now the save/load is kind of cursed
+ *
+ * I wanted to have code and relevant constants kept next to the declarations for them,
+ * so when serializing, we just filter out functions and fields with capitalized letters,
+ * then we stick that back in when deserializing. */
+let save = save_load();
+function save_save() {
+    /* filter out uppercase things; those are constants that should get replaced. */
+    const replacer = (key, val) => (key.toLowerCase() != key) ? undefined : val;
+
+    localStorage.setItem("save_game", JSON.stringify(save, replacer));
+}
+function save_load() {
+    const save_string = localStorage.getItem("save_game");
+    if (!DEBUG_PERSIST || !save_string) return save_new();
+
+    const pojo = JSON.parse(save_string);
+    const rich = save_new();
+
+    /* patch in methods */
+    if (pojo.version == rich.version)
+        return (function patch(out, pojo, rich) {
+            /* the goal here is to just to put in functions on the core objects
+             * (completely ignore arrays) and to fill in missing (capitalized) fields */
+            for (const key in rich) {
+                /* could use "pojo" as "out," but then
+                 * it's impossible to "lose" a field. */
+                out[key] = pojo[key];
+
+                if (typeof rich[key] == "function") {
+                    out[key] = rich[key];
+                }
+
+                if (!(key in pojo)) {
+                    out[key] = rich[key];
+                }
+
+                const isArray = Array.isArray(pojo[key]);
+                const isNull = pojo[key] == null;
+                const isFn = typeof pojo[key] == "function";
+                const isObject = (typeof pojo[key]) == "object";
+                if (!isFn && !isNull && !isArray && isObject) {
+                    out[key] = patch({}, pojo[key], rich[key]);
+                }
+            }
+
+            return out;
+        })({}, pojo, rich);
+
+    /* version mismatch? just make a new character */
+    return rich;
+}
 
 requestAnimationFrame(function frame(timestamp) {
     requestAnimationFrame(frame);
